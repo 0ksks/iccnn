@@ -1,0 +1,38 @@
+# All paths must be written as lists, whether they are directories or files.
+# !!! Even if a path contains only a single file, it should still be represented
+#     as a list to ensure cross-platform compatibility.
+# as below, the logs and outputs can be loaded and saved at any location
+wandb:
+  root:
+    - ..
+    - wandb_files
+  api_key: <key>
+  project: f_map
+
+dataset:
+  root:
+    - ..
+    - dataset
+  cub_200_2011:
+    - CUB_200_2011
+  voc_2010_crop:
+    - voc2010_crop
+    - voc2010_crop
+
+weight:
+  root:
+    - ..
+    - weight
+  vgg_16_bn:
+    - vgg16.pth
+  tuned:
+    - model_2499.pth
+
+output:
+  root:
+    - ..
+    - output
+  feature_maps:
+    - feature_maps
+  filter_conv:
+    - filter_conv_weights
