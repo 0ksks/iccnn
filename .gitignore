@@ -1,8 +1,2 @@
-/dataset/
-/wandb/
-/f_map/
-/output/
-/test/
-/weight/
 **/__pychache__/
 tmp*.py

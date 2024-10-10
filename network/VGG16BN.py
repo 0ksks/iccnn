@@ -27,9 +27,10 @@ class VGG16BN(LitModel):
             example_input: torch.Tensor,
             train_dataloader: torch.utils.data.DataLoader,
             cluster_class,
-            cluster_loss_interval=1,
+            cluster_interval=1,
             cluster_loss_factor=0.1,
             cluster_stop_epoch=200,
+            hierarchical_loss_factor=0.1,
             log_tmp_output_every_step=None,
             log_tmp_output_every_epoch=None,
             overwrite_classifier=True,
@@ -41,10 +42,8 @@ class VGG16BN(LitModel):
                 in_features=model.classifier[3].out_features,
                 out_features=num_classes
             )
-        super(VGG16BN, self).__init__(
-            model, cluster_loss_interval, log_tmp_output_every_step,
-            log_tmp_output_every_epoch, example_input
-        )
+        super(VGG16BN, self).__init__(model, cluster_interval, log_tmp_output_every_step, log_tmp_output_every_epoch,
+                                      example_input)
 
         #  config cluster
         self.SMG_block = None
@@ -56,6 +55,7 @@ class VGG16BN(LitModel):
 
         # config log
         self._train_dataloader = train_dataloader
+        self.add_intercept_output("features.32", "4.3")
         self.add_intercept_output("features.39", "5.2")
         self.add_intercept_output("features.42", "5.3")
         self.total_filter_feature_map = None
@@ -65,6 +65,10 @@ class VGG16BN(LitModel):
         self.rough_cluster_mapping = None
         self.rough_intra_similarity_mask = None
         self.rough_inter_similarity_mask = None
+
+        # config hierarchical loss
+        self.precise_rough_mapping = None
+        self.hierarchical_loss_factor = hierarchical_loss_factor
 
     def train_dataloader(self) -> TRAIN_DATALOADERS:
         return self._train_dataloader
@@ -83,8 +87,12 @@ class VGG16BN(LitModel):
         return similarity
 
     def hierarchical_loss_fn(self, precise_f_map: torch.Tensor, rough_f_map: torch.Tensor):
+        """
+        :param precise_f_map: (B, C, H, W)
+        :param rough_f_map: (B, C, H, W)
+        """
         if self.rough_cluster_mapping is None:  # skip when rough_cluster_mapping hasn't been calculated
-            return None
+            return torch.tensor(0.0)
 
         b, c, h, w = rough_f_map.shape
         avg_rough_f_map_mask = self.rough_cluster_mapping.unique(dim=1)  # (C, cluster)
@@ -93,20 +101,62 @@ class VGG16BN(LitModel):
             avg_rough_f_map_mask
             .view(1, c, self.center_num, 1, 1)
             .expand(b, c, self.center_num, h, w)
-        )
+        )  # (B, C, cluster, H, W)
 
         weighted_rough_f_map = (
                 rough_f_map
                 .unsqueeze(2)
                 .expand(b, c, self.center_num, h, w)
                 * avg_rough_f_map_mask
-        )
-        avg_rough_f_map = weighted_rough_f_map.sum(dim=1)
+        )  # (B, C, cluster, H, W)
+        avg_rough_f_map = weighted_rough_f_map.sum(dim=1)  # (B, cluster, H, W)
 
         if rough_f_map.shape != precise_f_map.shape:  # scaling
             avg_rough_f_map = avg_rough_f_map.numpy(force=True)
-            avg_rough_f_map = interpolate_grid(avg_rough_f_map, precise_f_map.shape)
-            avg_rough_f_map = torch.from_numpy(avg_rough_f_map).to(self.device)
+            avg_rough_f_map = interpolate_grid(avg_rough_f_map, precise_f_map.shape[2])
+            avg_rough_f_map = torch.from_numpy(avg_rough_f_map).to(dtype=precise_f_map.dtype, device=self.device)
+
+        precise_rough_overlap = self.map_precise_rough_overlap(precise_f_map, avg_rough_f_map)
+        # (precise_channel, avg_rough_channel)
+        precise_rough_overlap_rate, precise_rough_overlap_mapping = (  # (precise_channel, )
+            precise_rough_overlap.max(dim=1)
+        )
+        self.precise_rough_mapping = precise_rough_overlap_mapping
+
+        return -precise_rough_overlap_rate.mean()
+
+    @staticmethod
+    def map_precise_rough_overlap(precise_f_map: torch.Tensor, avg_rough_f_map: torch.Tensor):
+        """
+        :param precise_f_map: (B, C, H, W)
+        :param avg_rough_f_map: (B, C, H, W)
+        :return: precise_rough_overlap (precise_channel, avg_rough_channel)
+        """
+        # batch norm
+        precise_f_map_mean = precise_f_map.mean(dim=0, keepdim=True)
+        precise_f_map_std = precise_f_map.std(dim=0, keepdim=True)
+        precise_f_map_norm = (precise_f_map - precise_f_map_mean) / (precise_f_map_std + EPSILON)
+
+        avg_rough_f_map_mean = avg_rough_f_map.mean(dim=0, keepdim=True)
+        avg_rough_f_map_std = avg_rough_f_map.std(dim=0, keepdim=True)
+        avg_rough_f_map_norm = (avg_rough_f_map - avg_rough_f_map_mean) / (avg_rough_f_map_std + EPSILON)
+
+        # flatten
+        # (B, C, H, W) -> (B, C, H*W)
+        precise_f_map_norm = precise_f_map_norm.flatten(start_dim=2)
+        avg_rough_f_map_norm = avg_rough_f_map_norm.flatten(start_dim=2)
+
+        batch, precise_channel, pixel = precise_f_map_norm.shape
+        rough_channel = avg_rough_f_map_norm.shape[1]
+        precise_rough_overlap = torch.zeros(
+            batch, precise_channel, rough_channel
+        )
+
+        for i in range(batch):
+            precise_rough_overlap[i] = Similarity.overlap(precise_f_map_norm[i], avg_rough_f_map_norm[i])
+        precise_rough_overlap = precise_rough_overlap.mean(dim=0)
+
+        return precise_rough_overlap
 
     def cluster_loss_fn(self, feature_map: torch.Tensor, labels: torch.Tensor):
         pretty_print("calculating clustering loss... (network.VGG16BN 68)")
@@ -157,9 +207,9 @@ class VGG16BN(LitModel):
             self, inputs: torch.Tensor, outputs: torch.Tensor, labels: torch.Tensor
     ) -> dict[str, torch.Tensor]:
         classification_loss = F.cross_entropy(outputs, labels)
-        cluster_loss = 0
         loss_log = {}
-        if self.current_epoch % self.cluster_loss_interval == 0:
+        cluster_loss = torch.tensor(0, device=self.device, dtype=torch.float)
+        if self.current_epoch < self.cluster_stop_epoch:
             cluster_loss, intra_similarity, inter_similarity = (
                 self.cluster_loss_fn(
                     self.intercept_output["5.3"],
@@ -171,19 +221,25 @@ class VGG16BN(LitModel):
                 "intra_similarity": intra_similarity,
                 "inter_similarity": inter_similarity,
             })
-            self.hierarchical_loss_fn(self.intercept_output["5.2"], self.intercept_output["5.3"])
 
-        total_loss = self.cluster_loss_factor * cluster_loss + classification_loss
+        hierarchical_loss = self.hierarchical_loss_fn(self.intercept_output["4.3"], self.intercept_output["5.3"])
+
+        total_loss = (
+                self.cluster_loss_factor * cluster_loss
+                + self.hierarchical_loss_factor * hierarchical_loss
+                + classification_loss
+        )
 
         loss_log.update({
             "train_loss": total_loss,
             "classification_loss": classification_loss,
+            "hierarchical_loss": hierarchical_loss,
         })
 
         return loss_log
 
     def on_train_epoch_start(self) -> None:
-        if self.current_epoch % self.cluster_loss_interval == 0 and self.current_epoch < self.cluster_stop_epoch:
+        if self.current_epoch % self.cluster_interval == 0 and self.current_epoch < self.cluster_stop_epoch:
             pretty_print("train epoch start (network.VGG16BN 106)")
             with torch.no_grad():
                 total_feature_map = []

@@ -9,7 +9,7 @@ class LitModel(pl.LightningModule):
     def __init__(
             self,
             model: nn.Module,
-            cluster_loss_interval: int = 1,
+            cluster_interval: int = 1,
             log_tmp_output_every_step: int = None,
             log_tmp_output_every_epoch: int = None,
             example_input: torch.Tensor = None
@@ -17,7 +17,7 @@ class LitModel(pl.LightningModule):
         super().__init__()
         #  save params
         self.model = model.to(self.device)
-        self.cluster_loss_interval = cluster_loss_interval
+        self.cluster_interval = cluster_interval
         self.log_tmp_output_every_step = log_tmp_output_every_step
         self.log_tmp_output_every_epoch = log_tmp_output_every_epoch
         self.example_input = example_input

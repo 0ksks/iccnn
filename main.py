@@ -29,8 +29,10 @@ def main(
         batch_size: int,
         num_workers: int,
         center_num: int,
+        cluster_interval: int,
         cluster_loss_factor: float,
-        cluster_loss_interval: int,
+        cluster_stop_epoch: int,
+        hierarchical_loss_factor: float,
         log_tmp_output_every_step: int,
         log_tmp_output_every_epoch: int,
         save_feature_map: int,
@@ -39,12 +41,10 @@ def main(
         run_name: str,
 ):
     num_classes = 2
-
-    vgg16 = vgg16_bn(weights=None)
-
     weight = "tuned"
     dataset = "voc_2010_crop"
 
+    vgg16 = vgg16_bn(weights=None)
     state_dict = torch.load(
         parse_config_path(
             get_config_value("weight.root") +
@@ -70,14 +70,13 @@ def main(
         state_dict = new_state_dict
 
     vgg16.load_state_dict(state_dict)
+
     if wandb_online == 0:
         os.environ["WANDB_MODE"] = "offline"
     wandb.login(key=get_config_value("wandb.api_key"))
-
     wandb_log_dir = parse_config_path(get_config_value("wandb.root"))
     if not os.path.exists(wandb_log_dir):
         os.makedirs(wandb_log_dir)
-
     wandb.init(
         name=run_name,
         dir=wandb_log_dir
@@ -99,14 +98,13 @@ def main(
         )
         for idx, dataset in enumerate(datasets):
             datasets[idx] = single_category_dataset(dataset)
-
     elif dataset == "voc_2010_crop":
         datasets = get_voc_dataset(dataset_path, "bird")
-
     else:
         raise Exception("dataset not supported")
 
     train_dataset = [datasets[0], ]
+
     if subset_size:
         train_dataset[0] = Subset(
             train_dataset[0],
@@ -115,19 +113,19 @@ def main(
                 subset_size
             )
         )
+
     if not num_workers:
         num_workers = os.cpu_count() // 2
-    example_input, _ = datasets[1][0]
 
     if not log_tmp_output_every_step:
         log_tmp_output_every_step = None
     if not log_tmp_output_every_epoch:
         log_tmp_output_every_epoch = None
 
+    example_input, _ = datasets[1][0]
     model = VGG16BN(
         model=vgg16, center_num=center_num, num_classes=num_classes,
-        example_input=example_input.unsqueeze(0),
-        train_dataloader=get_dataloader(
+        example_input=example_input.unsqueeze(0), train_dataloader=get_dataloader(
             train_dataset,
             train_kwargs=dict(
                 num_workers=num_workers,
@@ -136,13 +134,21 @@ def main(
             split="train",
             batch_size=batch_size
         ),
-        cluster_class=SpectralClustering,
-        cluster_loss_factor=cluster_loss_factor,
-        cluster_loss_interval=cluster_loss_interval,
+        cluster_class=SpectralClustering, cluster_interval=cluster_interval,
+        cluster_loss_factor=cluster_loss_factor, cluster_stop_epoch=cluster_stop_epoch,
+        hierarchical_loss_factor=hierarchical_loss_factor,
         log_tmp_output_every_step=log_tmp_output_every_step,
         log_tmp_output_every_epoch=log_tmp_output_every_epoch,
-        save_feature_map=save_feature_map,
-        overwrite_classifier=weight != "tuned"
+        overwrite_classifier=weight != "tuned",
+        save_feature_map=save_feature_map
+    )
+
+    wandb.log(
+        {
+            "cluster_loss_factor": cluster_loss_factor,
+            "hierarchical_loss_factor": hierarchical_loss_factor,
+        },
+        step=0
     )
 
     trainer = Trainer(logger=wandb_logger, max_epochs=max_epochs, accelerator="auto")
@@ -176,17 +182,29 @@ def cli(
             help="the number of cluster center when clustering",
             prompt="center num"
         ),
+        cluster_interval: int = typer.Option(
+            1,
+            "--cluster-loss-interval", "-cli",
+            help="the interval between clustering loss updates",
+            prompt="cluster loss interval"
+        ),
         cluster_loss_factor: float = typer.Option(
             1e-1,
             "--cluster-loss-factor", "-clf",
             help="the loss factor on clustering loss when adding up all losses",
             prompt="cluster loss factor"
         ),
-        cluster_loss_interval: int = typer.Option(
-            1,
-            "--cluster-loss-interval", "-cli",
-            help="the interval between clustering loss updates",
-            prompt="cluster loss interval"
+        cluster_stop_epoch: int = typer.Option(
+            200,
+            "--cluster-stop-epoch", "-cse",
+            help="stop clustering after this epoch",
+            prompt="cluster stop epoch"
+        ),
+        hierarchical_loss_factor: float = typer.Option(
+            0.1,
+            "--hierarchical-loss-factor", "-hlf",
+            help="the loss factor on hierarchical clustering loss when adding up all losses",
+            prompt="hierarchical loss factor"
         ),
         log_tmp_output_every_step: int = typer.Option(
             0,
@@ -225,12 +243,9 @@ def cli(
             prompt="run name"
         )
 ):
-    main(
-        subset_size, batch_size, num_workers, center_num,
-        cluster_loss_factor, cluster_loss_interval,
-        log_tmp_output_every_step, log_tmp_output_every_epoch, save_feature_map,
-        max_epochs, wandb_online, run_name
-    )
+    main(subset_size, batch_size, num_workers, center_num, cluster_interval, cluster_loss_factor, cluster_stop_epoch,
+         hierarchical_loss_factor, log_tmp_output_every_step, log_tmp_output_every_epoch, save_feature_map, max_epochs,
+         wandb_online, run_name)
 
 
 if __name__ == '__main__':
@@ -238,14 +253,16 @@ if __name__ == '__main__':
     main(
         subset_size=8,
         batch_size=2,
-        num_workers=0,
+        num_workers=5,
         center_num=5,
+        cluster_interval=1,
         cluster_loss_factor=1e-1,
-        cluster_loss_interval=1,
+        cluster_stop_epoch=50,
+        hierarchical_loss_factor=1e-3,
         log_tmp_output_every_step=0,
         log_tmp_output_every_epoch=0,
         save_feature_map=0,
-        max_epochs=4,
-        wandb_online=0,
+        max_epochs=400,
+        wandb_online=1,
         run_name=RUN_NAME
     )
