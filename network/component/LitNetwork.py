@@ -1,3 +1,4 @@
+import os
 from abc import abstractmethod
 import numpy as np
 import pytorch_lightning as pl
@@ -9,6 +10,9 @@ class LitModel(pl.LightningModule):
     def __init__(
             self,
             model: nn.Module,
+            save_pth: int,
+            save_pth_path: str,
+            save_pth_name: str,
             cluster_interval: int = 1,
             log_tmp_output_every_step: int = None,
             log_tmp_output_every_epoch: int = None,
@@ -21,6 +25,9 @@ class LitModel(pl.LightningModule):
         self.log_tmp_output_every_step = log_tmp_output_every_step
         self.log_tmp_output_every_epoch = log_tmp_output_every_epoch
         self.example_input = example_input
+        self.save_pth = save_pth
+        self.save_pth_path = save_pth_path
+        self.save_pth_name = save_pth_name
 
         #  store outputs intercepted by hooks
         self.intercept_output: dict[str, torch.Tensor] = {}
@@ -113,3 +120,8 @@ class LitModel(pl.LightningModule):
 
     def forward(self, x):
         return self.model(x)
+
+    def on_train_end(self) -> None:
+        if self.save_pth:
+            name = self.save_pth_name if self.save_pth_name else f"model_{self.current_epoch}.pth"
+            torch.save(self.model.state_dict(), os.path.join(self.save_pth_path, name))

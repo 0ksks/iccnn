@@ -35,6 +35,9 @@ def main(
         hierarchical_loss_factor: float,
         log_tmp_output_every_step: int,
         log_tmp_output_every_epoch: int,
+        save_pth: int,
+        save_pth_path: str,
+        save_pth_name: str,
         save_feature_map: int,
         max_epochs: int,
         wandb_online: int,
@@ -54,7 +57,7 @@ def main(
         map_location=torch.device("cpu"),  # TODO gpu
     )
 
-    if weight == "tuned":  # TODO why change the original fc layers?
+    if weight == "model_2499":  # TODO why change the original fc layers?
         vgg16.classifier[3] = torch.nn.Linear(
             in_features=4096,
             out_features=512
@@ -125,6 +128,15 @@ def main(
     example_input, _ = datasets[1][0]
     if cluster_stop_epoch == 0:
         cluster_stop_epoch = max_epochs
+
+    if save_pth == "0":
+        save_pth = None
+    if save_pth_path == "0":
+        save_pth_path = None
+
+    if save_pth and not save_pth_path:
+        save_pth_path = parse_config_path(get_config_value("weight.root"))
+
     model = VGG16BN(
         model=vgg16, center_num=center_num, num_classes=num_classes,
         example_input=example_input.unsqueeze(0), train_dataloader=get_dataloader(
@@ -141,6 +153,9 @@ def main(
         hierarchical_loss_factor=hierarchical_loss_factor,
         log_tmp_output_every_step=log_tmp_output_every_step,
         log_tmp_output_every_epoch=log_tmp_output_every_epoch,
+        save_pth=save_pth,
+        save_pth_path=save_pth_path,
+        save_pth_name=save_pth_name,
         overwrite_classifier=weight != "tuned",
         save_feature_map=save_feature_map
     )
@@ -220,6 +235,25 @@ def cli(
             help="to log tmp output every epoch, set `0` to disable log",
             prompt="log tmp output every epoch(`0` to disable)"
         ),
+        save_pth: int = typer.Option(
+            0,
+            "--save-pth", "-sw",
+            help="to save model weights, set `0` to disable",
+            prompt="save model weights or not(`0` to disable)"
+        ),
+        save_pth_path: str = typer.Option(
+            "0",
+            "--save-pth-path", "-swp",
+            help="where to save model weights, set `0` to use default dir",
+            prompt=f"save path(`0` to default `{parse_config_path(get_config_value('weight.root'))}`)"
+        ),
+        save_pth_name: str = typer.Option(
+            "0",
+            "--save-pth-name", "-swn",
+
+            help="name of the model weights, set `0` to use default name",
+            prompt="save name(`0` to default `model_${global_step}.pth`)"
+        ),
         save_feature_map: int = typer.Option(
             0,
             "--save-feature-map", "-epoch",
@@ -245,9 +279,14 @@ def cli(
             prompt="run name"
         )
 ):
-    main(subset_size, batch_size, num_workers, center_num, cluster_interval, cluster_loss_factor, cluster_stop_epoch,
-         hierarchical_loss_factor, log_tmp_output_every_step, log_tmp_output_every_epoch, save_feature_map, max_epochs,
-         wandb_online, run_name)
+    main(
+        subset_size, batch_size, num_workers,
+        center_num, cluster_interval, cluster_loss_factor, cluster_stop_epoch,
+        hierarchical_loss_factor,
+        log_tmp_output_every_step, log_tmp_output_every_epoch,
+        save_pth, save_pth_path, save_pth_name, save_feature_map,
+        max_epochs, wandb_online, run_name
+    )
 
 
 if __name__ == '__main__':
@@ -262,9 +301,12 @@ if __name__ == '__main__':
         cluster_stop_epoch=0,
         hierarchical_loss_factor=1e-3,
         log_tmp_output_every_step=0,
-        log_tmp_output_every_epoch=2,
+        log_tmp_output_every_epoch=0,
         save_feature_map=0,
-        max_epochs=200,
-        wandb_online=1,
+        save_pth=1,
+        save_pth_path="",
+        save_pth_name="",
+        max_epochs=2,
+        wandb_online=0,
         run_name=RUN_NAME
     )

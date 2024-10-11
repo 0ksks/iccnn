@@ -25,6 +25,9 @@ class VGG16BN(LitModel):
             center_num: int,
             num_classes: int,
             example_input: torch.Tensor,
+            save_pth: int,
+            save_pth_path: str,
+            save_pth_name: str,
             train_dataloader: torch.utils.data.DataLoader,
             cluster_class,
             cluster_interval=1,
@@ -42,8 +45,11 @@ class VGG16BN(LitModel):
                 in_features=model.classifier[3].out_features,
                 out_features=num_classes
             )
-        super(VGG16BN, self).__init__(model, cluster_interval, log_tmp_output_every_step, log_tmp_output_every_epoch,
-                                      example_input)
+        super(VGG16BN, self).__init__(
+            model, save_pth, save_pth_path, save_pth_name, cluster_interval,
+            log_tmp_output_every_step, log_tmp_output_every_epoch,
+            example_input
+        )
 
         #  config cluster
         self.SMG_block = None
@@ -326,6 +332,7 @@ class VGG16BN(LitModel):
         # save_sample_feature_maps(self.example_input, self.grid_images, self.logger, self.global_step, 5)
 
     def on_train_end(self):
+        super().on_train_end()
         if self.save_feature_map:
             self.log_lock = True  # lock on, to avoid recursive hooking
             with torch.no_grad():

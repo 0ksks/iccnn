@@ -26,4 +26,6 @@ config.yaml                # config paths
 
 **python**: 3.9.19
 
-To run the program, execute `python main.py` and follow the instructions provided by the CLI.
+To run the program, run `python main.py` and follow the instructions provided by the CLI.
+
+run `python main.py --help` to see the parameter definition.

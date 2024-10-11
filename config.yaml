@@ -24,7 +24,7 @@ weight:
     - weight
   vgg_16_bn:
     - vgg16.pth
-  tuned:
+  model_2499:
     - model_2499.pth
 
 output:
