@@ -17,7 +17,6 @@ dataset:
     - CUB_200_2011
   voc_2010_crop:
     - voc2010_crop
-    - voc2010_crop
 
 weight:
   root:
@@ -36,3 +35,5 @@ output:
     - feature_maps
   filter_conv:
     - filter_conv_weights
+  group_feature_maps:
+    - group_feature_maps

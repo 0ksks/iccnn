@@ -41,7 +41,7 @@ def main(
         run_name: str,
 ):
     num_classes = 2
-    weight = "tuned"
+    weight = "vgg_16_bn"
     dataset = "voc_2010_crop"
 
     vgg16 = vgg16_bn(weights=None)
@@ -123,6 +123,8 @@ def main(
         log_tmp_output_every_epoch = None
 
     example_input, _ = datasets[1][0]
+    if cluster_stop_epoch == 0:
+        cluster_stop_epoch = max_epochs
     model = VGG16BN(
         model=vgg16, center_num=center_num, num_classes=num_classes,
         example_input=example_input.unsqueeze(0), train_dataloader=get_dataloader(
@@ -252,17 +254,17 @@ if __name__ == '__main__':
     # typer.run(cli)
     main(
         subset_size=8,
-        batch_size=2,
-        num_workers=5,
+        batch_size=4,
+        num_workers=1,
         center_num=5,
         cluster_interval=1,
         cluster_loss_factor=1e-1,
-        cluster_stop_epoch=50,
+        cluster_stop_epoch=0,
         hierarchical_loss_factor=1e-3,
         log_tmp_output_every_step=0,
-        log_tmp_output_every_epoch=0,
+        log_tmp_output_every_epoch=2,
         save_feature_map=0,
-        max_epochs=400,
+        max_epochs=200,
         wandb_online=1,
         run_name=RUN_NAME
     )

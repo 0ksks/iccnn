@@ -1,4 +1,3 @@
-import torch
 from pytorch_lightning.utilities.types import TRAIN_DATALOADERS
 from torch.utils.data import DataLoader
 from torch import nn
@@ -10,6 +9,7 @@ from network.component.SMGBlock import SMGBlock
 from network.util.similarity import Similarity
 from network.util.clustering import Clustering
 from network.util.interpolation import interpolate_grid
+from network.util import mapping2label
 
 from network.log.contribution_norm import *
 from network.log.feature_map import *
@@ -52,6 +52,7 @@ class VGG16BN(LitModel):
         self.clustering.set_cluster_class(cluster_class)
         self.cluster_loss_factor = cluster_loss_factor
         self.cluster_stop_epoch = cluster_stop_epoch
+        self.last_cluster_loss = None
 
         # config log
         self._train_dataloader = train_dataloader
@@ -60,6 +61,7 @@ class VGG16BN(LitModel):
         self.add_intercept_output("features.42", "5.3")
         self.total_filter_feature_map = None
         self.total_filter_layer_name = "features.40"
+        self.total_filter_log_lock = False
         self.save_feature_map = save_feature_map
 
         self.rough_cluster_mapping = None
@@ -92,8 +94,10 @@ class VGG16BN(LitModel):
         :param rough_f_map: (B, C, H, W)
         """
         if self.rough_cluster_mapping is None:  # skip when rough_cluster_mapping hasn't been calculated
-            return torch.tensor(0.0)
+            return torch.tensor(0.0).to(self.device)
 
+        precise_f_map = precise_f_map.to(self.device)
+        rough_f_map = rough_f_map.to(self.device)
         b, c, h, w = rough_f_map.shape
         avg_rough_f_map_mask = self.rough_cluster_mapping.unique(dim=1)  # (C, cluster)
         avg_rough_f_map_mask /= avg_rough_f_map_mask.sum(dim=0)
@@ -102,7 +106,6 @@ class VGG16BN(LitModel):
             .view(1, c, self.center_num, 1, 1)
             .expand(b, c, self.center_num, h, w)
         )  # (B, C, cluster, H, W)
-
         weighted_rough_f_map = (
                 rough_f_map
                 .unsqueeze(2)
@@ -133,13 +136,15 @@ class VGG16BN(LitModel):
         :return: precise_rough_overlap (precise_channel, avg_rough_channel)
         """
         # batch norm
-        precise_f_map_mean = precise_f_map.mean(dim=0, keepdim=True)
-        precise_f_map_std = precise_f_map.std(dim=0, keepdim=True)
-        precise_f_map_norm = (precise_f_map - precise_f_map_mean) / (precise_f_map_std + EPSILON)
+        precise_f_map_min = precise_f_map.min()
+        precise_f_map_max = precise_f_map.max()
+        precise_f_map_norm = (precise_f_map - precise_f_map_min) / (precise_f_map_max - precise_f_map_min + EPSILON)
 
-        avg_rough_f_map_mean = avg_rough_f_map.mean(dim=0, keepdim=True)
-        avg_rough_f_map_std = avg_rough_f_map.std(dim=0, keepdim=True)
-        avg_rough_f_map_norm = (avg_rough_f_map - avg_rough_f_map_mean) / (avg_rough_f_map_std + EPSILON)
+        avg_rough_f_map_min = avg_rough_f_map.min()
+        avg_rough_f_map_max = avg_rough_f_map.max()
+        avg_rough_f_map_norm = (avg_rough_f_map - avg_rough_f_map_min) / (
+                avg_rough_f_map_max - precise_f_map_min + EPSILON
+        )
 
         # flatten
         # (B, C, H, W) -> (B, C, H*W)
@@ -208,8 +213,7 @@ class VGG16BN(LitModel):
     ) -> dict[str, torch.Tensor]:
         classification_loss = F.cross_entropy(outputs, labels)
         loss_log = {}
-        cluster_loss = torch.tensor(0, device=self.device, dtype=torch.float)
-        if self.current_epoch < self.cluster_stop_epoch:
+        if self.cluster_stop_epoch == 0 or self.current_epoch < self.cluster_stop_epoch:
             cluster_loss, intra_similarity, inter_similarity = (
                 self.cluster_loss_fn(
                     self.intercept_output["5.3"],
@@ -221,8 +225,12 @@ class VGG16BN(LitModel):
                 "intra_similarity": intra_similarity,
                 "inter_similarity": inter_similarity,
             })
+            self.last_cluster_loss = cluster_loss
+        else:
+            cluster_loss = self.last_cluster_loss
 
-        hierarchical_loss = self.hierarchical_loss_fn(self.intercept_output["4.3"], self.intercept_output["5.3"])
+        # hierarchical_loss = self.hierarchical_loss_fn(self.intercept_output["4.3"], self.intercept_output["5.3"])
+        hierarchical_loss = torch.tensor(0).to(dtype=torch.float, device=self.device)
 
         total_loss = (
                 self.cluster_loss_factor * cluster_loss
@@ -243,6 +251,7 @@ class VGG16BN(LitModel):
             pretty_print("train epoch start (network.VGG16BN 106)")
             with torch.no_grad():
                 total_feature_map = []
+                self.log_lock = True
                 for batch in self.train_dataloader():
                     inputs, _ = batch
                     inputs = inputs.to(self.device)
@@ -250,6 +259,7 @@ class VGG16BN(LitModel):
                     total_feature_map.append(
                         self.intercept_output["5.3"].detach().cpu().numpy()
                     )
+                self.log_lock = False
                 total_feature_map = np.concatenate(total_feature_map, axis=0)
                 sample, channel, height, width = total_feature_map.shape
                 total_feature_map = total_feature_map.reshape(sample, channel, height * width)
@@ -263,6 +273,9 @@ class VGG16BN(LitModel):
                     feature_map_similarity,
                     self.center_num
                 )
+                self.rough_cluster_mapping = self.rough_cluster_mapping.to(self.device)
+                self.rough_intra_similarity_mask = self.rough_intra_similarity_mask.to(self.device)
+                self.rough_inter_similarity_mask = self.rough_inter_similarity_mask.to(self.device)
 
     def conv_2d_filter(self, name: str, layer: nn.Module) -> tuple[bool, str]:
         return (  # ReLU
@@ -281,29 +294,42 @@ class VGG16BN(LitModel):
     def hook_feature_map(self, name, layer):
         def hook(module, input, output):
             # check lock, to avoid recursive hooking
-            if self.epoch_log_lock:
+            if self.log_lock:
                 self.grid_images.update(get_sample_feature_map(name, layer, module, input, output))
-            if name == "relu.42":
+            if self.total_filter_log_lock and name == "relu.42":
                 self.total_filter_feature_map = get_total_feature_map(name, layer, module, input, output)
 
         return hook
 
     def log_tmp_output(self):
-        self.epoch_log_lock = True  # lock on, to avoid recursive hooking
+        self.log_lock = True  # lock on, to avoid recursive hooking
+        self.total_filter_log_lock = True
         with torch.no_grad():
             self.model(self.example_input.to(self.device))  # Forward pass using example input
-        self.epoch_log_lock = False  # lock off
-
-        contribution_norm = get_contribution_norms(
-            self.intercept_output["5.2"],
-            dict([*self.model.named_modules()])[self.total_filter_layer_name],
-            self.device
+        self.total_filter_log_lock = False
+        self.log_lock = False  # lock off
+        rough_cluster_mapping = self.rough_cluster_mapping
+        rough_cluster_label = mapping2label(rough_cluster_mapping)
+        feature_map_masks = get_grouped_feature_map_mask(
+            self.total_filter_feature_map,
+            rough_cluster_label.numpy()
         )
-        contribution_fig = draw_contribution_norms(contribution_norm, "conv.5.3", "relu.5.2")
-        save_contribution_norms(contribution_fig, self.logger, self.global_step)
+        apply_grouped_feature_map_mask(self.example_input, feature_map_masks, self.global_step, self.logger, alpha=0.5)
+        # contribution_norm = get_contribution_norms(
+        #     self.intercept_output["5.2"],
+        #     dict([*self.model.named_modules()])[self.total_filter_layer_name],
+        #     self.device
+        # )
+        # contribution_fig = draw_contribution_norms(contribution_norm, "conv.5.3", "relu.5.2")
+        # save_contribution_norms(contribution_fig, self.logger, self.global_step)
 
-        save_sample_feature_maps(self.example_input, self.grid_images, self.logger, self.global_step, 5)
+        # save_sample_feature_maps(self.example_input, self.grid_images, self.logger, self.global_step, 5)
 
     def on_train_end(self):
         if self.save_feature_map:
-            save_total_feature_map(self.total_filter_layer_name, self.total_filter_feature_map)
+            self.log_lock = True  # lock on, to avoid recursive hooking
+            with torch.no_grad():
+                self.model(self.example_input.to(self.device))  # Forward pass using example input
+            self.log_lock = False  # lock off
+
+            # save_total_feature_map(self.total_filter_layer_name, self.total_filter_feature_map)

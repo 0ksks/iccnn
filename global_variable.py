@@ -2,12 +2,14 @@ from datetime import datetime
 from typing import Any
 
 from yaml import safe_load
+import platform
 
 EPSILON = 1e-4
 
 CONFIG = safe_load(open("config.yaml", encoding="utf-8"))
-
-RUN_NAME = datetime.now().strftime("%m_%d(%H-%M)")
+platform_info = platform.platform()
+run_time = datetime.now().strftime("%m_%d(%H-%M)")
+RUN_NAME = f"[{platform_info}][{run_time}]"
 
 
 def parse_config_path(config_path: list[str]) -> str:

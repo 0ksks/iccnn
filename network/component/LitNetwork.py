@@ -27,7 +27,7 @@ class LitModel(pl.LightningModule):
         self.grid_images: dict[str, np.ndarray] = {}
 
         #  lock, to avoid hooking recursively
-        self.epoch_log_lock = False
+        self.log_lock = False
 
         #  register hooks for Conv2d layers
         for name, layer in model.named_modules():
@@ -37,7 +37,9 @@ class LitModel(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         inputs, labels = batch
+        self.log_lock = True
         outputs = self.model(inputs)
+        self.log_lock = False
         log_dict = self.training_step_loss_fn(inputs, outputs, labels)
 
         train_loss = log_dict["train_loss"]
@@ -69,7 +71,9 @@ class LitModel(pl.LightningModule):
             self.log_tmp_output()
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=1e-3)
+        optimizer = torch.optim.Adam(self.parameters(), lr=1e-6)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=125, gamma=0.6)
+        return [optimizer], [{"scheduler": scheduler, "interval": "epoch", "frequency": 1}]
 
     @abstractmethod
     def conv_2d_filter(self, name: str, layer: nn.Module) -> tuple[bool, str]:
